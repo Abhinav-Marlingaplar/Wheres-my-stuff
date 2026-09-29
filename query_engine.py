@@ -11,7 +11,9 @@ Approach:
   2. Try to extract a known COCO object class via keyword / fuzzy matching
      against the list of classes actually observed in the current database.
   3. Query db.py for the latest observation and the zone-transition history.
-  4. Format and return a structured result dict.
+  4. If no class matches, embed the phrase with CLIP and search the FAISS
+     crop index for the nearest stored sighting.
+  5. Format and return a structured result dict.
 """
 
 import re
@@ -22,6 +24,8 @@ from db import (
     get_distinct_tracked_classes,
     get_observation_summary,
 )
+from memory import ObservationMemory, best_text_hit
+from reid import get_clip_embedder
 
 
 # ── Common COCO class aliases (user word → YOLO class name) ────────────────
@@ -170,6 +174,9 @@ def answer_query(question: str) -> dict:
 
     resolved = _resolve_class(raw_name, tracked_classes)
     if resolved is None:
+        visual = _visual_search(question, raw_name, tracked_classes)
+        if visual is not None:
+            return visual
         return _result(
             question, raw_name,
             f"I haven't seen any **{raw_name}** in the video. "
@@ -210,6 +217,55 @@ def answer_query(question: str) -> dict:
         question, resolved, "\n".join(answer_lines),
         latest=latest, history=history, tracked_classes=tracked_classes,
     )
+
+
+def _visual_search(question: str, raw_name: str, tracked_classes: list[str]) -> dict | None:
+    """CLIP text search over the FAISS crop index when no class name matches."""
+    memory = ObservationMemory().load()
+    if not memory.meta:
+        return None
+    embedder = get_clip_embedder()
+    if not embedder.available:
+        return None
+    vector = embedder.embed_text(f"a photo of a {raw_name}")
+    if vector is None:
+        return None
+    hit = best_text_hit(memory.search(vector, k=5))
+    if hit is None:
+        return None
+
+    latest = {
+        "frame_number": hit.get("frame_number"),
+        "object_class": hit.get("object_class"),
+        "zone": hit.get("zone"),
+        "timestamp": hit.get("timestamp"),
+        "confidence": hit.get("confidence") or 0,
+        "global_track_id": hit.get("global_track_id"),
+        "crop_path": hit.get("crop_path"),
+        "frame_path": hit.get("frame_path"),
+    }
+    history = []
+    if hit.get("global_track_id") is not None:
+        history = get_object_history(global_track_id=hit["global_track_id"])
+
+    score = hit["score"]
+    answer_lines = [
+        f"No tracked class matched **{raw_name}**.",
+        f"The closest sighting in the visual memory is a "
+        f"**{latest['object_class']}** in **{latest['zone']}** "
+        f"(similarity {score:.0%}).",
+        f"   • Frame: {latest['frame_number']}",
+        f"   • Timestamp: {latest['timestamp']}",
+    ]
+    if latest.get("global_track_id"):
+        answer_lines.append(f"   • Global Track ID: {latest['global_track_id']}")
+    result = _result(
+        question, latest["object_class"], "\n".join(answer_lines),
+        latest=latest, history=history, tracked_classes=tracked_classes,
+    )
+    result["retrieval"] = "faiss"
+    result["score"] = score
+    return result
 
 
 def _result(question, object_class, answer, latest=None, history=None,

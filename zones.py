@@ -18,6 +18,76 @@ import numpy as np
 _DEFAULT_ZONES_FOR_RESOLUTION = None  # lazily built per video resolution
 
 
+def default_zones(img_width: int, img_height: int) -> list[dict]:
+    """Four quadrant polygons sized to a video frame."""
+    return _build_default_zones(img_width, img_height)
+
+
+def hex_to_bgr(hex_color: str) -> list[int]:
+    """Convert a ``#RRGGBB`` colour to an OpenCV BGR triple."""
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return [0, 255, 0]
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return [b, g, r]
+
+
+def hex_to_rgba(hex_color: str, alpha: float = 0.35) -> str:
+    """Convert ``#RRGGBB`` to a CSS rgba() string for the drawing canvas."""
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return f"rgba(0, 255, 0, {alpha})"
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def canvas_polygon_points(
+    obj: dict,
+    x_scale: float = 1.0,
+    y_scale: float = 1.0,
+) -> list[list[int]]:
+    """Map a Fabric.js polygon from streamlit-drawable-canvas onto frame pixels.
+
+    Canvas coordinates are display-sized. ``x_scale`` / ``y_scale`` convert
+    them back to the original video frame (original / display).
+    """
+    raw = obj.get("points") or []
+    if obj.get("type") not in (None, "polygon", "polyline", "path"):
+        return []
+    if len(raw) < 3:
+        return []
+
+    width = float(obj.get("width") or 0)
+    height = float(obj.get("height") or 0)
+    # Stray right-clicks on the canvas produce an empty polygon.
+    if width < 2 or height < 2:
+        return []
+
+    left = float(obj.get("left", 0))
+    top = float(obj.get("top", 0))
+    sx = float(obj.get("scaleX") or 1)
+    sy = float(obj.get("scaleY") or 1)
+    offset = obj.get("pathOffset") or {}
+    ox = float(offset.get("x", 0))
+    oy = float(offset.get("y", 0))
+
+    if obj.get("originX") == "center":
+        cx = left
+    else:
+        cx = left + (width * sx) / 2.0
+    if obj.get("originY") == "center":
+        cy = top
+    else:
+        cy = top + (height * sy) / 2.0
+
+    points: list[list[int]] = []
+    for p in raw:
+        x = cx + (float(p["x"]) - ox) * sx
+        y = cy + (float(p["y"]) - oy) * sy
+        points.append([int(round(x * x_scale)), int(round(y * y_scale))])
+    return points
+
+
 def _build_default_zones(img_width: int, img_height: int) -> list[dict]:
     """Return four quadrant-based polygon zones matching the Task 4 layout."""
     hw = img_width // 2

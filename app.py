@@ -11,7 +11,9 @@ Tabs:
 import streamlit as st
 import os
 import requests
+import cv2
 import pandas as pd
+from PIL import Image
 from pipeline import process_video
 from db import (
     init_db,
@@ -22,13 +24,41 @@ from db import (
     get_object_history,
 )
 from query_engine import answer_query
-from zones import ZoneManager
-import json
+from zones import (
+    ZoneManager,
+    canvas_polygon_points,
+    default_zones,
+    hex_to_bgr,
+    hex_to_rgba,
+)
+
+_CANVAS_MAX_WIDTH = 900
+_ZONE_FRAME_PATH = os.path.join("uploads", "_zone_freeze.jpg")
+
+
+def _first_frame(video_path: str):
+    """Return the first frame of a video, or None if it cannot be read."""
+    cap = cv2.VideoCapture(video_path)
+    ok, frame = cap.read()
+    cap.release()
+    if not ok or frame is None:
+        return None
+    return frame
+
+
+def _preview_bgr(frame_bgr, zones: list[dict]):
+    """Draw the current draft zones on a copy of the freeze-frame."""
+    preview = frame_bgr.copy()
+    if zones:
+        mgr = ZoneManager()
+        mgr.zones = zones
+        mgr.draw_zones(preview, alpha=0.35)
+    return preview
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Where Is My Stuff?", layout="wide")
 st.title("🔎 Where Is My Stuff?")
-st.caption("Computer Vision Object Tracking & Observation System — Task 5 (50% Milestone)")
+st.caption("Computer Vision Object Tracking & Observation System — 75% Milestone")
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("frames", exist_ok=True)
@@ -36,6 +66,13 @@ os.makedirs("crops", exist_ok=True)
 
 # Ensure DB exists
 init_db()
+
+if "draft_zones" not in st.session_state:
+    st.session_state.draft_zones = []
+if "canvas_key" not in st.session_state:
+    st.session_state.canvas_key = 0
+if "zone_video_name" not in st.session_state:
+    st.session_state.zone_video_name = None
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -54,19 +91,16 @@ with tab1:
     col_upload, col_zones = st.columns([3, 2])
 
     with col_zones:
-        st.subheader("Zone Configuration")
+        st.subheader("Saved Zones")
         zm = ZoneManager()
-        st.markdown("Current zones are loaded from `zones.json` "
-                     "(or default quadrant layout).")
+        if zm.zones and os.path.exists(zm.config_path):
+            st.caption("Loaded from `zones.json`.")
+        else:
+            st.caption("No saved file yet. Defaults are the four quadrants.")
 
         for i, zone in enumerate(zm.zones):
-            st.markdown(f"**{i+1}. {zone['name']}** — "
-                        f"{len(zone['points'])} vertices, "
-                        f"colour `{zone['color']}`")
-
-        st.info("💡 To customise zones, edit `zones.json` in the project "
-                "folder and re-run.  Dynamic polygon drawing UI is planned "
-                "for the next milestone.")
+            st.markdown(f"**{i + 1}. {zone['name']}** — "
+                        f"{len(zone['points'])} vertices")
 
     with col_upload:
         st.subheader("Upload & Process Video")
@@ -78,6 +112,18 @@ with tab1:
             with open(video_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             st.success(f"✅ Uploaded **{uploaded_file.name}**")
+
+            if st.session_state.zone_video_name != uploaded_file.name:
+                freeze = _first_frame(video_path)
+                if freeze is None:
+                    st.error("Could not read a frame from this video.")
+                else:
+                    cv2.imwrite(_ZONE_FRAME_PATH, freeze)
+                    h, w = freeze.shape[:2]
+                    st.session_state.zone_video_name = uploaded_file.name
+                    st.session_state.zone_frame_size = (w, h)
+                    st.session_state.draft_zones = []
+                    st.session_state.canvas_key = 0
 
             if st.button("▶️ Start Processing", type="primary"):
                 progress_bar = st.progress(0)
@@ -112,6 +158,117 @@ with tab1:
                 with open(output_video_path, "rb") as f:
                     st.download_button("⬇️ Download Annotated Video", f,
                                        file_name="annotated_output.mp4")
+
+    # ── Draw zones on the uploaded freeze-frame ──────────────────────────
+    st.markdown("---")
+    st.subheader("Draw Zones")
+    if st.session_state.pop("zone_save_ok", False):
+        st.success("Saved to `zones.json`. Processing will use these polygons.")
+    if (st.session_state.zone_video_name is None
+            or not os.path.exists(_ZONE_FRAME_PATH)):
+        st.info("Upload a video to draw zones on its first frame. "
+                "Until then, processing uses `zones.json` or the default "
+                "quadrants.")
+    else:
+        freeze = cv2.imread(_ZONE_FRAME_PATH)
+        frame_w, frame_h = st.session_state.zone_frame_size
+        scale = min(1.0, _CANVAS_MAX_WIDTH / max(frame_w, 1))
+        disp_w = max(1, int(frame_w * scale))
+        disp_h = max(1, int(frame_h * scale))
+        x_scale = frame_w / disp_w
+        y_scale = frame_h / disp_h
+
+        preview = _preview_bgr(freeze, st.session_state.draft_zones)
+        rgb = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
+        background = Image.fromarray(rgb).resize((disp_w, disp_h))
+
+        draw_col, list_col = st.columns([3, 2])
+        with list_col:
+            st.markdown("**Zones for this video**")
+            zone_name = st.text_input("Zone name", value="Desk")
+            zone_color = st.color_picker("Zone colour", value="#00FF00")
+            st.caption("Left-click to place vertices. Right-click to close "
+                       "the polygon. Double-click removes the last vertex.")
+
+            if st.session_state.draft_zones:
+                for i, zone in enumerate(st.session_state.draft_zones):
+                    c1, c2 = st.columns([4, 1])
+                    c1.markdown(
+                        f"**{i + 1}. {zone['name']}** — "
+                        f"{len(zone['points'])} vertices"
+                    )
+                    if c2.button("✕", key=f"drop_zone_{i}"):
+                        st.session_state.draft_zones.pop(i)
+                        st.rerun()
+            else:
+                st.caption("No zones drawn yet.")
+
+            if st.button("Use quadrant defaults"):
+                st.session_state.draft_zones = default_zones(frame_w, frame_h)
+                st.session_state.canvas_key += 1
+                st.rerun()
+
+            if st.button("Save zones", type="primary"):
+                if not st.session_state.draft_zones:
+                    st.warning("Draw at least one zone before saving.")
+                else:
+                    ZoneManager().update_zones(st.session_state.draft_zones)
+                    st.session_state.zone_save_ok = True
+                    st.rerun()
+
+        with draw_col:
+            try:
+                from streamlit_drawable_canvas import st_canvas
+            except ImportError:
+                st.error("Install `streamlit-drawable-canvas-fix` "
+                         "(`pip install -r requirements.txt`) to draw zones.")
+                st_canvas = None
+
+            canvas_result = None
+            if st_canvas is not None:
+                canvas_result = st_canvas(
+                    fill_color=hex_to_rgba(zone_color, 0.35),
+                    stroke_width=2,
+                    stroke_color=zone_color,
+                    background_image=background,
+                    update_streamlit=True,
+                    height=disp_h,
+                    width=disp_w,
+                    drawing_mode="polygon",
+                    display_toolbar=True,
+                    key=f"zone_canvas_{st.session_state.canvas_key}",
+                )
+
+            if st.button("Add polygon as zone", type="primary"):
+                objects = []
+                if canvas_result is not None and canvas_result.json_data:
+                    objects = canvas_result.json_data.get("objects") or []
+                polygons = [
+                    canvas_polygon_points(obj, x_scale, y_scale)
+                    for obj in objects
+                    if obj.get("type") == "polygon"
+                ]
+                polygons = [pts for pts in polygons if len(pts) >= 3]
+                name = zone_name.strip()
+                if not name:
+                    st.warning("Give the zone a name.")
+                elif not polygons:
+                    st.warning("Draw a polygon first, then right-click to "
+                               "close it.")
+                else:
+                    points = polygons[-1]
+                    points = [
+                        [min(max(0, x), frame_w - 1),
+                         min(max(0, y), frame_h - 1)]
+                        for x, y in points
+                    ]
+                    st.session_state.draft_zones.append({
+                        "name": name,
+                        "color": hex_to_bgr(zone_color),
+                        "points": points,
+                    })
+                    st.session_state.canvas_key += 1
+                    st.rerun()
 
     # Observations table
     st.markdown("---")
@@ -173,6 +330,11 @@ with tab2:
             st.warning("No match found.")
 
         st.markdown(result["answer"])
+        if result.get("retrieval") == "faiss":
+            st.caption(
+                "Answered from the visual memory index "
+                f"(similarity {result.get('score', 0):.0%})."
+            )
 
         # Show evidence images if available
         latest = result.get("latest")
