@@ -10,11 +10,13 @@ Tabs:
 
 import streamlit as st
 import os
+import threading
 import requests
 import cv2
 import pandas as pd
+from datetime import timedelta
 from PIL import Image
-from pipeline import process_video
+from pipeline import process_stream, process_video
 from db import (
     init_db,
     get_all_observations,
@@ -34,6 +36,31 @@ from zones import (
 
 _CANVAS_MAX_WIDTH = 900
 _ZONE_FRAME_PATH = os.path.join("uploads", "_zone_freeze.jpg")
+_LIVE_PREVIEW = "live_preview.jpg"
+_LIVE = {"stop": False, "thread": None, "error": None}
+
+
+def _live_frame(annotated_frame, frame_number):
+    """Save a preview for the dashboard. Return True when the user pressed Stop."""
+    if frame_number % 3 == 1:
+        tmp = _LIVE_PREVIEW + ".tmp.jpg"
+        cv2.imwrite(tmp, annotated_frame)
+        os.replace(tmp, _LIVE_PREVIEW)
+    return _LIVE["stop"]
+
+
+def _live_worker(source: str):
+    try:
+        process_stream(source, frame_callback=_live_frame)
+    except Exception as exc:
+        _LIVE["error"] = str(exc)
+    finally:
+        _LIVE["stop"] = True
+
+
+def _live_running() -> bool:
+    thread = _LIVE["thread"]
+    return thread is not None and thread.is_alive()
 
 
 def _first_frame(video_path: str):
@@ -57,6 +84,28 @@ def _preview_bgr(frame_bgr, zones: list[dict]):
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Where Is My Stuff?", layout="wide")
+
+
+@st.fragment(run_every=timedelta(seconds=1))
+def _live_panel():
+    """Refresh the preview and the latest zone of each object while the camera runs."""
+    if _LIVE["error"]:
+        st.error(_LIVE["error"])
+    if os.path.exists(_LIVE_PREVIEW):
+        st.image(_LIVE_PREVIEW, caption="Live view", use_container_width=True)
+    elif _live_running():
+        st.info("Waiting for the first frame from the camera.")
+    summary = get_observation_summary()
+    if summary:
+        st.markdown("**Latest zone**")
+        cols = st.columns(min(len(summary), 4))
+        for i, item in enumerate(summary):
+            with cols[i % len(cols)]:
+                st.metric(item["object_class"].title(), item["last_zone"])
+    elif _live_running():
+        st.caption("No objects detected yet.")
+
+
 st.title("🔎 Where Is My Stuff?")
 st.caption("Computer Vision Object Tracking & Observation System — 75% Milestone")
 
@@ -158,6 +207,31 @@ with tab1:
                 with open(output_video_path, "rb") as f:
                     st.download_button("⬇️ Download Annotated Video", f,
                                        file_name="annotated_output.mp4")
+
+    st.markdown("---")
+    st.subheader("Live camera")
+    st.caption("Webcam index `0`, or an RTSP address. "
+               "Sightings from the last 30 minutes are kept.")
+    camera_source = st.text_input("Camera", value="0")
+    start_col, stop_col = st.columns(2)
+    with start_col:
+        if st.button("Start camera", type="primary", disabled=_live_running()):
+            _LIVE["stop"] = False
+            _LIVE["error"] = None
+            source = camera_source.strip() or "0"
+            _LIVE["thread"] = threading.Thread(
+                target=_live_worker, args=(source,), daemon=True,
+            )
+            _LIVE["thread"].start()
+            st.rerun()
+    with stop_col:
+        if st.button("Stop camera", disabled=not _live_running()):
+            _LIVE["stop"] = True
+    if _live_running():
+        st.success("Camera is running.")
+    else:
+        st.caption("Camera is stopped.")
+    _live_panel()
 
     # ── Draw zones on the uploaded freeze-frame ──────────────────────────
     st.markdown("---")

@@ -50,7 +50,15 @@ streamlit run app.py
 ```
 The dashboard will open in your browser at `http://localhost:8501`.
 
-### 5. Run the evaluation
+### 5. Live camera or RTSP
+The dashboard’s **Live camera** section can start and stop a webcam or RTSP stream and shows the latest zone for each object. From a terminal, press `q` in the preview window to stop. The annotated recording is `output_live.mp4`. A live run keeps recent sightings and drops anything older than 30 minutes. Uploading a video file still starts a fresh log.
+
+```powershell
+py -3.13 pipeline.py 0
+py -3.13 pipeline.py rtsp://camera-address/stream
+```
+
+### 6. Run the evaluation
 After a video has been processed, or by passing a video path so the script processes it first:
 ```powershell
 python evaluate.py
@@ -85,4 +93,5 @@ This writes `evaluation_results.md` with detection counts, zone dwell, stitched 
 ## Reports
 - **Task 4 Report (25% Milestone):** [`project_report.md`](project_report.md)
 - **Task 5 Report (50% Milestone):** [`report5.md`](report5.md)
-- **75% Milestone:** [`milestone_75.md`](milestone_75.md)
+- **75% Milestone note:** [`milestone_75.md`](milestone_75.md)
+- **75% Project Report:** [`CSE411_Where_Is_My_Stuff_75_Report.docx`](CSE411_Where_Is_My_Stuff_75_Report.docx)

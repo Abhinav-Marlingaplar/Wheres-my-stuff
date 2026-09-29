@@ -15,10 +15,37 @@ from ultralytics import YOLO
 import datetime
 import os
 import json
-from db import init_db, reset_db, insert_observation
+from db import (
+    init_db,
+    reset_db,
+    insert_observation,
+    max_frame_number,
+    prune_older_than,
+    window_cutoff,
+)
 from zones import ZoneManager
 from reid import GlobalTracker
 from memory import ObservationMemory
+
+
+def capture_source(source):
+    """OpenCV source: an integer webcam index, or a file path / RTSP URL."""
+    if isinstance(source, int):
+        return source
+    text = str(source).strip()
+    if text.isdigit():
+        return int(text)
+    return text
+
+
+def is_live_source(source) -> bool:
+    """True for a webcam index or a network camera URL."""
+    if isinstance(source, int):
+        return True
+    text = str(source).strip().lower()
+    return text.isdigit() or text.startswith(
+        ("rtsp://", "rtsps://", "http://", "https://")
+    )
 
 
 def process_video(video_path, output_video_path="output.mp4",
@@ -46,10 +73,62 @@ def process_video(video_path, output_video_path="output.mp4",
     -------
     str : path to the output video
     """
-    # Reset DB and the visual-memory index for a fresh run
-    reset_db()
+    return _run_pipeline(
+        video_path,
+        output_video_path=output_video_path,
+        frames_dir=frames_dir,
+        crops_dir=crops_dir,
+        zones_config=zones_config,
+        progress_callback=progress_callback,
+    )
+
+
+LIVE_WINDOW_SECONDS = 30 * 60
+
+
+def process_stream(source, output_video_path="output_live.mp4",
+                   frames_dir="frames", crops_dir="crops",
+                   zones_config=None, progress_callback=None,
+                   frame_callback=None, max_frames=None,
+                   window_seconds=LIVE_WINDOW_SECONDS):
+    """
+    Run the same detection, tracking, zone, and identity pipeline on a
+    live source: a webcam index (``0``) or an RTSP/HTTP camera URL.
+
+    Sightings are appended to the existing log. Rows older than
+    ``window_seconds`` (30 minutes by default) are dropped.
+    ``frame_callback(annotated_frame, frame_number)`` may return True to stop.
+    ``max_frames`` stops after that many frames.
+    """
+    return _run_pipeline(
+        source,
+        output_video_path=output_video_path,
+        frames_dir=frames_dir,
+        crops_dir=crops_dir,
+        zones_config=zones_config,
+        progress_callback=progress_callback,
+        frame_callback=frame_callback,
+        max_frames=max_frames,
+        reset=False,
+        window_seconds=window_seconds,
+    )
+
+
+def _run_pipeline(source, output_video_path="output.mp4",
+                  frames_dir="frames", crops_dir="crops",
+                  zones_config=None, progress_callback=None,
+                  frame_callback=None, max_frames=None,
+                  reset=True, window_seconds=None):
+    # A file run replaces the log. A live run keeps it and prunes by age.
     memory = ObservationMemory()
-    memory.reset()
+    if reset:
+        reset_db()
+        memory.reset()
+    else:
+        init_db()
+        memory.load()
+        if window_seconds:
+            _prune_window(memory, window_seconds)
 
     # Initialise YOLO model (nano for CPU speed)
     model = YOLO("yolov8n.pt")
@@ -58,13 +137,17 @@ def process_video(video_path, output_video_path="output.mp4",
     os.makedirs(frames_dir, exist_ok=True)
     os.makedirs(crops_dir, exist_ok=True)
 
-    # Open video
-    cap = cv2.VideoCapture(video_path)
+    # Open a file, a webcam index, or an RTSP/HTTP URL
+    cap = cv2.VideoCapture(capture_source(source))
     if not cap.isOpened():
-        raise Exception(f"Error opening video file {video_path}")
+        raise Exception(f"Error opening video source {source}")
 
-    img_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    img_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    ok, frame = cap.read()
+    if not ok or frame is None:
+        cap.release()
+        raise Exception(f"No frames from video source {source}")
+
+    img_height, img_width = frame.shape[:2]
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -83,14 +166,12 @@ def process_video(video_path, output_video_path="output.mp4",
     out = cv2.VideoWriter(output_video_path, fourcc, fps,
                           (img_width, img_height))
 
-    frame_number = 0
+    frame_number = 0 if reset else max_frame_number()
+    processed = 0
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
+    while frame is not None:
         frame_number += 1
+        processed += 1
         timestamp = str(datetime.datetime.now())
 
         # ── Detection + Tracking ─────────────────────────────────────────
@@ -198,8 +279,22 @@ def process_video(video_path, output_video_path="output.mp4",
         if progress_callback:
             progress_callback(frame_number, total_frames)
 
+        if window_seconds and frame_number % 30 == 0:
+            _prune_window(memory, window_seconds)
+
+        if frame_callback is not None and frame_callback(annotated_frame, frame_number):
+            break
+        if max_frames is not None and processed >= max_frames:
+            break
+
+        ok, frame = cap.read()
+        if not ok:
+            frame = None
+
     cap.release()
     out.release()
+    if window_seconds:
+        _prune_window(memory, window_seconds)
     memory.save()
     os.makedirs(memory.directory, exist_ok=True)
     with open(os.path.join(memory.directory, "run_stats.json"), "w",
@@ -211,6 +306,12 @@ def process_video(video_path, output_video_path="output.mp4",
     return output_video_path
 
 
+def _prune_window(memory: ObservationMemory, window_seconds: float):
+    """Drop database rows and visual-memory crops older than the window."""
+    prune_older_than(window_seconds)
+    memory.drop_older_than(window_cutoff(window_seconds))
+
+
 def _id_color(track_id: int) -> tuple:
     """Deterministic BGR colour from a track ID (for consistent box colours)."""
     import hashlib
@@ -219,9 +320,18 @@ def _id_color(track_id: int) -> tuple:
 
 
 # ── CLI entrypoint ───────────────────────────────────────────────────────────
+def _preview_and_stop(annotated_frame, frame_number):
+    """Show the live view. Press q to stop."""
+    cv2.imshow("Where Is My Stuff?  (press q to stop)", annotated_frame)
+    return (cv2.waitKey(1) & 0xFF) == ord("q")
+
+
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1:
-        process_video(sys.argv[1])
+    if len(sys.argv) < 2:
+        print("Usage: python pipeline.py <video_path | webcam_index | rtsp_url>")
+    elif is_live_source(sys.argv[1]):
+        process_stream(sys.argv[1], frame_callback=_preview_and_stop)
+        cv2.destroyAllWindows()
     else:
-        print("Usage: python pipeline.py <video_path>")
+        process_video(sys.argv[1])

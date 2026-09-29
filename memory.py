@@ -45,6 +45,26 @@ class ObservationMemory:
     def _index_path(self) -> str:
         return os.path.join(self.directory, "crops.index")
 
+    def drop_older_than(self, cutoff_text: str) -> int:
+        """Remove keyframes whose stored timestamp is older than ``cutoff_text``."""
+        if not self.meta:
+            return 0
+        keep_index = [
+            i for i, item in enumerate(self.meta)
+            if (item.get("timestamp") or "") >= cutoff_text
+        ]
+        removed = len(self.meta) - len(keep_index)
+        if removed == 0:
+            return 0
+        self.meta = [self.meta[i] for i in keep_index]
+        if self._vectors.size and len(self._vectors) == removed + len(keep_index):
+            self._vectors = (
+                self._vectors[keep_index]
+                if keep_index
+                else np.zeros((0, 0), dtype=np.float32)
+            )
+        return removed
+
     def reset(self):
         """Drop the in-memory index and any files from the previous video."""
         self.meta = []

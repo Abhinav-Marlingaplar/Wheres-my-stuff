@@ -15,6 +15,7 @@ Schema (Task 5 — extended):
   frame_path      TEXT           ← path to saved keyframe  (NEW)
 """
 
+import datetime
 import sqlite3
 import os
 
@@ -49,8 +50,40 @@ def init_db():
     conn.close()
 
 
+def window_cutoff(seconds: float) -> str:
+    """Timestamp string matching how observations are stored."""
+    cutoff = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
+    return str(cutoff)
+
+
+def prune_older_than(seconds: float) -> int:
+    """Delete sightings older than ``seconds``. Returns how many rows were removed."""
+    init_db()
+    conn = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM observations WHERE timestamp < ?",
+        (window_cutoff(seconds),),
+    )
+    removed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return removed
+
+
+def max_frame_number() -> int:
+    """Highest frame number already stored, or 0 when the log is empty."""
+    init_db()
+    conn = _get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(MAX(frame_number), 0) FROM observations")
+    value = cursor.fetchone()[0]
+    conn.close()
+    return int(value or 0)
+
+
 def reset_db():
-    """Drop and recreate the observations table (used before a new run)."""
+    """Drop and recreate the observations table (used before a new file run)."""
     conn = _get_conn()
     cursor = conn.cursor()
     cursor.execute("DROP TABLE IF EXISTS observations")
@@ -115,7 +148,7 @@ def get_latest_observation(object_class: str):
     cursor.execute("""
         SELECT * FROM observations
         WHERE LOWER(object_class) = LOWER(?)
-        ORDER BY frame_number DESC
+        ORDER BY id DESC
         LIMIT 1
     """, (object_class,))
     rows = cursor.fetchall()
@@ -136,13 +169,13 @@ def get_object_history(object_class: str = None, global_track_id: int = None):
         cursor.execute("""
             SELECT * FROM observations
             WHERE global_track_id = ?
-            ORDER BY frame_number ASC
+            ORDER BY id ASC
         """, (global_track_id,))
     elif object_class is not None:
         cursor.execute("""
             SELECT * FROM observations
             WHERE LOWER(object_class) = LOWER(?)
-            ORDER BY frame_number ASC
+            ORDER BY id ASC
         """, (object_class,))
     else:
         conn.close()
@@ -195,7 +228,7 @@ def get_observation_summary():
         summaries.append({
             "object_class": cls,
             "total_detections": cnt,
-            "last_seen_frame": last_frame,
+            "last_seen_frame": latest["frame_number"] if latest else last_frame,
             "last_zone": latest["zone"] if latest else "Unknown",
             "last_confidence": latest["confidence"] if latest else 0,
         })
