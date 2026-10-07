@@ -28,28 +28,15 @@ from memory import ObservationMemory, best_text_hit
 from reid import get_clip_embedder
 
 
-# ── Common COCO class aliases (user word → YOLO class name) ────────────────
 _ALIASES: dict[str, str] = {
-    "phone": "cell phone",
-    "cellphone": "cell phone",
-    "mobile": "cell phone",
-    "tv": "tv",
-    "television": "tv",
-    "monitor": "tv",
-    "couch": "couch",
-    "sofa": "couch",
-    "bag": "backpack",
-    "rucksack": "backpack",
-    "glasses": "wine glass",
-    "spectacles": "wine glass",
-    "cup": "cup",
-    "mug": "cup",
-    "remote": "remote",
-    "controller": "remote",
-    "keys": "cell phone",   # YOLO can't detect keys — best-effort alias
-    "mouse": "mouse",
-    "keyboard": "keyboard",
-    "charger": "cell phone",
+    "key": "keys", "keychain": "keys", "car keys": "keys",
+    "spectacles": "glasses", "specs": "glasses", "eyeglasses": "glasses",
+    "earphone": "earphones", "earbuds": "earphones", "headphones": "earphones",
+    "wristwatch": "watch", "wrist watch": "watch",
+    "water bottle": "bottle",
+    "cream bottle": "cream", "lotion": "cream", "moisturizer": "cream",
+    "pouch": "bag", "small bag": "bag", "purse": "bag",
+    "billfold": "wallet",
 }
 
 
