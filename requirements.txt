@@ -12,3 +12,6 @@ Pillow
 pandas
 open-clip-torch
 faiss-cpu
+ftfy
+regex
+git+https://github.com/ultralytics/CLIP.git
