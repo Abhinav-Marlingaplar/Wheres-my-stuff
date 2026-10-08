@@ -10,3 +10,6 @@ crops/
 memory/
 .vscode/
 .idea/
+*.pt
+weights/
+*.mp4

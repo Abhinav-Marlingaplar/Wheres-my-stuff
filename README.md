@@ -1,6 +1,6 @@
-# Where Is My Stuff? — 75% Milestone
+# Where Is My Stuff?
 
-A Computer Vision-based tracking and observation system designed to answer: *"Where did I last leave this object?"*
+A computer-vision tracking and observation system designed to answer: *"Where did I last leave this object?"*
 
 This repository contains the prototype implementation for **CSE411 Computer Vision Project — Task 5 (Implementation Part 2)** by **Team 13**:
 - Saksham Saklani (2023BCD0049)
@@ -12,13 +12,20 @@ This repository contains the prototype implementation for **CSE411 Computer Visi
 
 ## Architecture Overview
 
-1. **Detection & Tracking**: YOLOv8 Nano (`yolov8n.pt`) paired with ByteTrack (`bytetrack.yaml`) for fast, CPU-friendly multi-object detection and tracking.
+1. **Detection & Tracking**: YOLO-World (`yolov8s-worldv2.pt`) with ByteTrack (`bytetrack.yaml`) for open-vocabulary detection and track association.
 2. **Visual Re-Identification (`reid.py`)**: `GlobalTracker` matches a new ByteTrack ID to a recently lost track of the same class using a CLIP ViT-B/32 embedding (cosine distance). If the CLIP weights cannot be loaded, it falls back to a 48-bin HSV histogram.
 3. **Dynamic Zone Classification (`zones.py`)**: `ZoneManager` utilizing OpenCV's Point-in-Polygon algorithm (`cv2.pointPolygonTest`) to evaluate arbitrary polygonal spatial zones persisted in JSON.
 4. **Natural Language Query Engine (`query_engine.py`)**: Parses natural questions (*"Where is my laptop?"*, *"Where did I leave my bottle?"*), resolves object classes via aliases and fuzzy matching, and retrieves latest locations with movement history. If no class matches, the question is embedded with CLIP and searched against the FAISS crop index.
 5. **Persistent Observation Storage (`db.py`)**: SQLite database (`observations.db`) logging timestamps, frame numbers, classes, ByteTrack IDs, global track IDs, confidence, zones, crop paths, and keyframe paths.
 6. **Backend REST API (`api.py`)**: FastAPI service hosting endpoints for Vision LLM scene analysis (Google Gemini 2.5 Flash), natural language queries, zone management, and observation summaries.
 7. **Frontend Dashboard (`app.py`)**: Multi-tab Streamlit dashboard providing video upload, live processing, interactive zone previews, natural language search with visual evidence cards, movement history timelines, and AI scene analysis.
+
+### Detection Behavior
+
+- The annotated video now renders detections even when the tracker has not assigned an ID yet.
+- Tracked detections show stable `GID:<id>` labels.
+- Untracked detections are still shown as `UNTRACKED` so visibility is not lost at object entry or during brief tracker dropouts.
+- SQLite stores both tracked and untracked detections (`tracking_id = -1` for untracked rows).
 
 ---
 
@@ -50,7 +57,13 @@ streamlit run app.py
 ```
 The dashboard will open in your browser at `http://localhost:8501`.
 
-### 5. Live camera or RTSP
+### 5. Process a video
+
+- Open **Video Processing & Zones** in the dashboard.
+- Upload a room video and click **Start Processing**.
+- Review the annotated output video and the observation table.
+
+### 6. Live camera or RTSP
 The dashboard’s **Live camera** section can start and stop a webcam or RTSP stream and shows the latest zone for each object. From a terminal, press `q` in the preview window to stop. The annotated recording is `output_live.mp4`. A live run keeps recent sightings and drops anything older than 30 minutes. Uploading a video file still starts a fresh log.
 
 ```powershell
@@ -58,7 +71,7 @@ py -3.13 pipeline.py 0
 py -3.13 pipeline.py rtsp://camera-address/stream
 ```
 
-### 6. Run the evaluation
+### 7. Run the evaluation
 After a video has been processed, or by passing a video path so the script processes it first:
 ```powershell
 python evaluate.py
@@ -95,3 +108,9 @@ This writes `evaluation_results.md` with detection counts, zone dwell, stitched 
 - **Task 5 Report (50% Milestone):** [`report5.md`](report5.md)
 - **75% Milestone note:** [`milestone_75.md`](milestone_75.md)
 - **75% Project Report:** [`CSE411_Where_Is_My_Stuff_75_Report.docx`](CSE411_Where_Is_My_Stuff_75_Report.docx)
+
+## Troubleshooting Low Detection Quality
+
+- Ensure the scene is well lit and the target object is not heavily motion-blurred.
+- Re-run with a clearer camera angle and less occlusion.
+- If you still miss small objects, lower detector confidence slightly in `pipeline.py`.

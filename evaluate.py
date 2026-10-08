@@ -20,11 +20,10 @@ from db import get_all_observations, init_db
 from query_engine import answer_query
 
 SAMPLE_QUESTIONS = [
-    "Where is my laptop?",
-    "Where did I leave my bottle?",
-    "What objects do you see?",
-    "Find my backpack",
-    "Where is my wallet?",
+    "Where are my keys?", "Where did I leave my wallet?",
+    "Where are my spectacles?", "Where are my earphones?",
+    "Where is my watch?", "Where is my cream bottle?",
+    "What objects do you see?", "Where is my passport?",
 ]
 
 RUN_STATS_PATH = os.path.join("memory", "run_stats.json")

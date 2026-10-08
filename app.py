@@ -106,8 +106,8 @@ def _live_panel():
         st.caption("No objects detected yet.")
 
 
-st.title("🔎 Where Is My Stuff?")
-st.caption("Computer Vision Object Tracking & Observation System — 75% Milestone")
+st.title("Where Is My Stuff?")
+st.caption("Object detection, tracking, and last-seen lookup dashboard.")
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("frames", exist_ok=True)
@@ -184,7 +184,7 @@ with tab1:
                     status_text.text(
                         f"Processing frame {current}/{total}")
 
-                with st.spinner("Running YOLO + ByteTrack + ReID pipeline…"):
+                with st.spinner("Running detection and tracking pipeline…"):
                     output_video_path = "output.mp4"
                     if os.path.exists(output_video_path):
                         os.remove(output_video_path)
@@ -198,6 +198,10 @@ with tab1:
                 st.success("✅ Processing Complete!")
 
                 st.subheader("Annotated Video")
+                st.caption(
+                    "Tracked detections show stable GID labels. "
+                    "UNTRACKED boxes are still rendered for visibility."
+                )
                 try:
                     st.video(output_video_path)
                 except Exception:
@@ -351,10 +355,21 @@ with tab1:
         obs = get_all_observations()
         if obs:
             df = pd.DataFrame(obs)
+            if "tracking_id" in df.columns:
+                df["detection_state"] = df["tracking_id"].apply(
+                    lambda tid: "tracked" if tid is not None and int(tid) >= 0 else "untracked"
+                )
             # Clean up display
-            display_cols = ["frame_number", "object_class",
-                            "global_track_id", "tracking_id",
-                            "zone", "confidence", "timestamp"]
+            display_cols = [
+                "frame_number",
+                "object_class",
+                "detection_state",
+                "global_track_id",
+                "tracking_id",
+                "zone",
+                "confidence",
+                "timestamp",
+            ]
             available = [c for c in display_cols if c in df.columns]
             st.dataframe(df[available], use_container_width=True,
                          height=300)
@@ -374,11 +389,14 @@ with tab2:
 
     # Example chips
     example_queries = [
-        "Where is my laptop?",
-        "Where did I leave the bottle?",
+        "Where are my keys?",
+        "Where did I leave my wallet?",
+        "Where are my spectacles?",
+        "Where are my earphones?",
+        "Where is my watch?",
+        "Where is my cream bottle?",
         "What objects do you see?",
-        "Find my backpack",
-        "Where is the chair?",
+        "Where is my passport?",
     ]
     st.caption("💡 Try one of these:")
     chip_cols = st.columns(len(example_queries))
@@ -391,7 +409,7 @@ with tab2:
     query_input = st.text_input(
         "Your question:",
         value=selected_example or "",
-        placeholder="e.g. Where is my laptop?",
+        placeholder="e.g. Where are my glasses?",
     )
 
     if st.button("🔎 Search", type="primary") and query_input:
